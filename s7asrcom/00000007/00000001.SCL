@@ -1,0 +1,24 @@
+
+FUNCTION_BLOCK FB666
+
+VAR_TEMP
+    // Temporary Variables
+
+END_VAR
+VAR
+    // Static Variables
+
+END_VAR
+
+    Q1.0:=0;
+    Q1.1:=1;
+    Q1.2:=1;
+    Q1.3:=1;
+    Q1.4:=1;
+    Q1.5:=0;
+    Q1.6:=0;
+    Q1.7:=0;
+    Q0.0:=I0.0;
+
+    ;
+END_FUNCTION_BLOCK

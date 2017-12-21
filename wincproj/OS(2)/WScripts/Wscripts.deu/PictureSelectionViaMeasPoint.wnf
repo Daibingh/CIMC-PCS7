@@ -1,0 +1,601 @@
+#include "dynamic.h"
+#include "language.h"
+
+#pragma code("pdlcsapi.dll")
+#include "pdlcsapi.h"
+#pragma code()
+
+#pragma code("dmclient.dll")
+#include "dmclient.h"
+#pragma code()
+#pragma option(mbcs)
+
+#ifndef LB_ADDSTRING
+#define LB_ADDSTRING    0x0180
+#endif
+
+#ifndef LB_SETCURSEL
+#define LB_SETCURSEL    0x0186
+#endif
+
+
+#define XGAP     15
+#define YGAP     5
+
+
+BEGIN_PROPERTY_SCHEME
+END_PROPERTY_SCHEME
+
+
+
+BEGIN_DYNAMICS
+	{
+		PF_TABNAME,
+		PCM_Name1,
+		NULL,
+		"BPC.bmp",
+		PCM_Name2
+		PCM_Name3,
+		{ "OnOption1", "OnOption2", },
+		"OnGenerate",
+		"OnShowGenerateInfo",
+		{ 
+			JCR_TRIGGERS,
+			{ NULL,NULL },
+		},
+
+	},
+END_DYNAMICS
+
+DECLARE_JCR_TRIGGERS
+
+char info_text1[]  = TEXT_PS_08;
+char info_text2a[] = TEXT_PS_09;
+char info_text2b[] = TEXT_PS_10;
+char info_text2c[] = TEXT_PS_11;
+char info_text2d[] = "%s.";
+char info_text2e[] = TEXT_PS_12;
+char szTarget[3][100]={TEXT_PS_13,
+		               TEXT_PS_14,
+		               TEXT_PS_15};
+
+DM_VARKEY dmVarKey = {DM_VARKEY_NAME,0,"",NULL};
+DWORD dwNumberOfTypes = 0;
+DWORD	  dwTypes[1];
+struct {
+       DWORD dwType;
+       char  szTypeName[100];
+       } g_prop[500] = {0,""};
+int g_index_type =0;
+char szType[256] = "";
+char szTypePicture[256] = "";
+char szTagInstance[256] = "";
+BOOL bLoopWorkField = TRUE;
+BOOL bLoopTopField  = FALSE;
+BOOL bGroupTopField = FALSE;
+char szSelTypeName[100];
+char szAllTypes[] = "<other type>";
+char g_szEditTypName[256];
+
+// Get Target Index
+DWORD GetTarget()
+{
+if ( bLoopTopField != FALSE ) return( 1 );
+if ( bGroupTopField != FALSE ) return( 2 );
+ return( 0 );
+}
+
+BOOL GetVarType (LPCSTR lpszVarName, LPSTR lpszTypeName, DWORD dwTypeNameLen)
+{
+  DM_VARKEY dmVarKey = {DM_VARKEY_NAME,0,"",NULL};
+  DM_TYPEREF dmTypeRef = {0, 0, ""};
+  CMN_ERROR err;
+
+  if (lpszVarName == NULL || lpszTypeName == NULL)
+     return FALSE;
+
+  *lpszTypeName = '\0';
+  _mbsncpy ((unsigned char *)dmVarKey.szName, (unsigned char *)lpszVarName, sizeof (dmVarKey.szName));  
+  if (!DMGetVarType (GetProjectName(), &dmVarKey, 1, &dmTypeRef, &err))
+  {
+    /*
+    char sz[512];
+    sprintf (sz, "GetVarType (dmVarKey: \'%s\'), err: %lu", dmVarKey.szName, err.dwError1);
+    MessageBox (NULL, sz, "Error", MB_OK);
+    */
+    return FALSE;
+  }
+  _mbsncpy ((unsigned char *)lpszTypeName, (unsigned char *)dmTypeRef.szTypeName, dwTypeNameLen);
+  return TRUE;
+}
+
+// Callback für EnumVarTypes-Funktion
+BOOL DMEnumTypesProc (LPCSTR lpszTypeName, DWORD dwTypeID, DWORD dwCreatorID, LPVOID pItem)
+{
+DWORD index;
+char szTypeName[260] = "";
+char* p = NULL;
+
+  if(lpszTypeName!=NULL)
+  {
+	if (pItem)	// Typen in Listbox (pItem) eintragen
+	{
+		p = (char *) _mbsstr((unsigned char *)lpszTypeName, (unsigned char *)"::");
+		if (p)
+		{
+			return TRUE;
+		}
+
+        	_mbsncpy ((unsigned char *)szTypeName,(unsigned char *)lpszTypeName, 260); 
+		index = SendMessage((HWND)pItem,LB_INSERTSTRING,(WPARAM)-1,(LPARAM)szTypeName);
+		sprintf(g_prop[index].szTypeName,szTypeName);
+		g_prop[index].dwType = dwTypeID;
+		return TRUE;
+	}
+	else	// Zählen der Typen
+	{
+		dwNumberOfTypes ++;
+	}
+  }
+  return TRUE;
+}
+
+void OnOption1(void)
+{
+HWND LBHwnd,hEditWnd;
+RECT rect;
+CMN_ERROR Err;
+BOOL bResult;
+
+  dwTypes[0] = 0;
+
+  ConnectToWinCC();
+
+// Prüfen, ob's überhaupt Typen gibt:
+dwNumberOfTypes = 0;
+szSelTypeName[0] = '\0';
+bResult = GAPIEnumTypes(GetProjectName(),DMEnumTypesProc,NULL,&Err);
+if (dwNumberOfTypes)
+{
+  DWORD index = 0;
+  CreateStatic(0, 10,TEXT_PS_16);
+  LBHwnd=CreateListbox(0, 30, "Typen", 8, &g_index_type);
+  index = SendMessage(LBHwnd,LB_INSERTSTRING,(WPARAM)-1,(LPARAM)szAllTypes);
+  sprintf(g_prop[index].szTypeName,szAllTypes);
+  g_prop[index].dwType = 0;
+  // enumerate all structur type from datamanager
+  bResult = GAPIEnumTypes(GetProjectName(),DMEnumTypesProc,LBHwnd,&Err);
+
+  CreateStatic(0,130,TEXT_PS_17);
+}
+else
+{
+  CreateStatic(0,130,TEXT_PS_17);
+}
+hEditWnd=CreateEdit(0,150,g_szEditTypName);
+GetWindowRect(GetParent(hEditWnd), &rect);
+MoveWindow(hEditWnd, 0, 150, (rect.right - rect.left), 20, TRUE);
+}
+
+void OnOption2(void)
+{
+HWND hWnd,LBHwnd;
+RECT rect;
+CMN_ERROR Err;
+BOOL bResult;
+char info_text2dx[255];
+DM_VARFILTER	dmFilter   = {DM_VARFILTER_TYPE, 1, NULL, NULL, NULL, NULL };
+
+BOOL bTypSelected = FALSE;
+if (g_index_type > 0)
+{
+	_mbsncpy ((unsigned char *)szSelTypeName, (unsigned char *)g_prop[g_index_type].szTypeName, sizeof(szSelTypeName));
+	bTypSelected = (szSelTypeName[0] != '\0');
+}
+else if (*g_szEditTypName)
+{
+  _mbsncpy ((unsigned char *)szSelTypeName, (unsigned char *)g_szEditTypName, sizeof(szSelTypeName));
+  bTypSelected = TRUE;
+}
+
+if (bTypSelected)
+{
+	sprintf(szTypePicture,"@PG_%s.pdl",szSelTypeName);
+	sprintf(info_text2dx,info_text2d,szSelTypeName);
+	dmFilter.dwFlags = DM_VARFILTER_TYPENAME;
+	// dmFilter.pdwTypes = &g_prop[g_index_type].dwType;
+	dmFilter.lpszConn = &szSelTypeName[0];
+}
+else
+{
+	CreateStatic(0,30,TEXT_PS_30);
+	MoveWindow(hWnd, 0, 50, (rect.right - rect.left), 20, TRUE);
+	return;
+/*
+	dwTypes[0] = DM_VARTYPE_STRUCT; //14
+	dmFilter.dwFlags = DM_VARFILTER_TYPE;
+	dmFilter.dwNumTypes = 1;
+	dmFilter.pdwTypes = &dwTypes[0];
+
+	szSelTypeName[0] = '\0';
+	szTypePicture[0] = '\0';
+*/
+}
+
+CreateStatic(0,30, info_text1);
+hWnd=CreateVarBrowserEx(0,0, &dmFilter, szTagInstance);
+CreateStatic(0, 80, info_text2a );
+CreateStatic(0, 95, info_text2b );
+
+if (bTypSelected)
+{
+	CreateStatic(0,110, info_text2c );
+	CreateStatic(0,125, info_text2dx );
+}
+else
+{
+}
+    
+GetWindowRect(GetParent(hWnd), &rect);
+
+MoveWindow(hWnd, 0, 50, (rect.right - rect.left), 120, TRUE);
+CreateStatic(0,150, info_text2e ); 
+CreateRadioButton(10,170,TEXT_PS_13, &bLoopWorkField);
+CreateRadioButton(10,190,TEXT_PS_14, &bLoopTopField);
+CreateRadioButton(10,210,TEXT_PS_15, &bGroupTopField);
+}
+
+void OnShowGenerateInfo(HWND hEdit)
+{
+	char szSelTypeNameRes[100];
+	char* pszPictureWithoutPrefix;
+	char *test = TEXT_PS_18	
+				"    %s\r\n"
+			TEXT_PS_19
+				"    %s\r\n"
+			TEXT_PS_20
+			TEXT_PS_21
+				"    %s\r\n"
+			TEXT_PS_22
+				"    %s\r\n"
+			TEXT_PS_23
+				"    %s.\r\n"
+				;
+	char *errtext1 = TEXT_PS_24
+			TEXT_PS_25
+			TEXT_PS_26;
+	char *errtext2 = TEXT_PS_27
+			TEXT_PS_28
+		    TEXT_PS_26;
+			
+				 
+	char text[400];
+	if (szTagInstance[0] == '\0')
+	{
+ 		SetWindowText(hEdit, errtext2);
+		return;
+	}
+
+	if (*szSelTypeName)
+	{
+		// alles ok.
+	}
+	else if (   GetVarType (szTagInstance, szSelTypeName, sizeof (szSelTypeName))
+                && *szSelTypeName)
+	{
+		_mbsncpy((unsigned char *)szSelTypeNameRes,(unsigned char *)szSelTypeName, sizeof (szSelTypeNameRes));
+		pszPictureWithoutPrefix = (char *) _mbsstr((unsigned char *)szSelTypeNameRes, (unsigned char *)"::");	
+		if (pszPictureWithoutPrefix)
+		{				// Multiclient
+			*pszPictureWithoutPrefix = 0;
+			pszPictureWithoutPrefix += 2;
+			sprintf(szTypePicture,"%s::@PG_%s.pdl",szSelTypeNameRes,pszPictureWithoutPrefix);
+		}
+		else
+		{				// Server, Standalone
+			sprintf(szTypePicture,"@PG_%s.pdl",szSelTypeName);
+		// alles ok.
+		}
+	}
+	else
+	{
+ 		SetWindowText(hEdit, errtext1);
+		return;
+	}
+
+	if (strlen(szTagInstance)<32)
+	{
+	sprintf(text,test,
+		szTypePicture,szTagInstance,gsz_Trigger,
+		GetObjectName(),szTarget[GetTarget()]);
+	}
+	else
+	{
+	char szTagInstance2[35] = "...";
+	int k;
+	int m;
+	m = strlen(szTagInstance);
+	for(k=0;k<32;k++)
+	{
+	szTagInstance2[k+3] = szTagInstance[m-32+k];
+	};
+	sprintf(text,test,
+		szTypePicture,szTagInstance2,gsz_Trigger,
+		GetObjectName(),szTarget[GetTarget()]);
+	}
+	SetWindowText(hEdit, text);
+}
+
+
+
+
+void OnGenerate(void)
+{
+PCMN_ERROR pError;
+AP_BLOB *blob;
+char ifcode[255];
+char code[2000];
+char sError[500];
+
+char szPicName[256];
+
+/*********** Start Insert XRef Section *******/
+char* szPictureName[1];
+char* szTagName[1];
+char szSelTypeNameRes[100];
+char szSourceCode[2100];
+char* pszPictureWithoutPrefix;
+/*********** End Insert XRef Section *******/
+
+	if (szTagInstance[0] == '\0')
+		return;
+
+	if (*szSelTypeName)
+	{
+		// alles ok.
+	}
+	else if (   GetVarType (szTagInstance, szSelTypeName, sizeof (szSelTypeName))
+                && *szSelTypeName)
+	{
+		_mbsncpy((unsigned char *)szSelTypeNameRes,(unsigned char *)szSelTypeName, sizeof (szSelTypeNameRes));
+		pszPictureWithoutPrefix = (char *) _mbsstr((unsigned char *)szSelTypeNameRes, (unsigned char *)"::");	
+		if (pszPictureWithoutPrefix)
+		{				// Multiclient
+			*pszPictureWithoutPrefix = 0;
+			pszPictureWithoutPrefix += 2;
+			sprintf(szTypePicture,"%s::@PG_%s.pdl",szSelTypeNameRes,pszPictureWithoutPrefix);
+		}
+		else
+		{				// Server, Standalone
+			sprintf(szTypePicture,"@PG_%s.pdl",szSelTypeName);
+			// alles ok.
+		}
+	}
+	else
+  		return;
+
+    if (memcmp(szSelTypeName, "SIPART", 6) == 0) // Ausname SIPART 19/21
+        szSelTypeName[6] = '\0';
+
+    else if (memcmp(szSelTypeName, "AF", 2) == 0) // Ausname AF_n
+        szSelTypeName[2] = '\0';
+
+    ifcode[0]=0;
+	
+	if (g_Trigger==KEYBOARDDOWN)
+	  sprintf(ifcode,"if (nChar==%d) ",g_KeyPressed[0]);
+
+ 	sprintf(code,"%s",ifcode);
+
+szTagName[0] = szTagInstance;
+
+_mbsncpy((unsigned char *)szSelTypeNameRes,(unsigned char *)szSelTypeName, sizeof (szSelTypeNameRes));
+pszPictureWithoutPrefix = (char *)_mbsstr((unsigned char *)szSelTypeNameRes, (unsigned char *)"::");	
+if (bGroupTopField)
+{
+	if (pszPictureWithoutPrefix)
+	{				// Multiclient
+		*pszPictureWithoutPrefix = 0;
+		pszPictureWithoutPrefix += 2;
+		sprintf(szPicName,"%s::@PG_%s.pdl",szSelTypeNameRes,pszPictureWithoutPrefix);
+	}
+	else
+	{				// Server, Standalone
+		sprintf (szPicName, "@PG_%s.pdl", szSelTypeName);
+	}
+}
+else // if (bLoopTopField)
+{
+	if (pszPictureWithoutPrefix)
+	{				// Multiclient
+		*pszPictureWithoutPrefix = 0;
+		pszPictureWithoutPrefix += 2;
+		sprintf(szPicName,"%s::@PL_%s.pdl",szSelTypeNameRes,pszPictureWithoutPrefix);
+	}
+	else
+	{				// Server, Standalone
+		sprintf (szPicName, "@PL_%s.pdl", szSelTypeName);
+	}
+}
+szPictureName[0] = szPicName;
+
+/*********** Start Insert XRef Section *******/
+	InsertXrefSection(szSourceCode,szTagName,1,szPictureName,1);
+/*********** End Insert XRef Section *******/
+
+	if ( bGroupTopField != FALSE )
+	{
+	_mbscpy((unsigned char *)code,(unsigned char *)	
+		"\r\n#pragma code(\"ssmrt.dll\")\r\n"
+		"#include \"ssmrt.h\"\r\n"
+		"#pragma code()\r\n"
+
+		"CMN_ERROR Err;\r\n"
+		"char szReturnPath[_MAX_PATH] = \"\";\r\n"
+		"char szTagName[MAX_DM_TYPE_NAME] = \"\";\r\n"
+		"char *pszPrefix = NULL;\r\n\r\n"
+
+		"GetServerTagPrefix(&pszPrefix,NULL,NULL);\r\n"	 
+		"if (0 == _mbsstr((unsigned char *)TAG_0,(unsigned char *)\"::\"))\r\n"
+		"{\r\n"
+
+		"   GetServerTagPrefix(&pszPrefix,NULL,NULL);\r\n"	 
+		"   if (pszPrefix )\r\n"
+		"   {\r\n"
+		"     _mbsncpy((unsigned char *)szTagName, (unsigned char *)pszPrefix,sizeof (szTagName));\r\n"
+		"     _mbsncat((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n"
+		"   }\r\n"
+		"   else\r\n"
+		"      _mbsncpy((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n\r\n"
+		"}\r\n"
+		"else\r\n"
+		"{\r\n"
+		"   _mbsncpy((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n\r\n"
+		"}\r\n"
+
+		"#ifndef RUN_ON_WEBNAVIGATOR\r\n"
+		"SSMRTOpenFaceplate(\r\n"
+		"  '?', PIC_0,\r\n"
+		"  NULL, 0,\r\n"
+		"  0, 0, 0, TRUE,\r\n"
+		"  szTagName, \"\",\r\n"
+		"  &Err);\r\n"		
+		"#else\r\n"
+		"_OpenFaceplate_Int(\r\n"
+		"1, PIC_0,\r\n"
+		"0, NULL, 0, 0, TRUE,\r\n"
+		"szTagName, \"\",\r\n"
+		"NULL, 0);\r\n"
+		"#endif\r\n"
+		);
+
+	}
+	if ( bLoopTopField != FALSE )
+	{
+	_mbscpy((unsigned char *)code,(unsigned char *)	
+		"\r\n#pragma code(\"ssmrt.dll\")\r\n"
+		"#include \"ssmrt.h\"\r\n"
+		"#pragma code()\r\n"
+
+		"CMN_ERROR Err;\r\n"
+		"char szReturnPath[_MAX_PATH] = \"\";\r\n"
+		"char szTagName[MAX_DM_TYPE_NAME] = \"\";\r\n"
+		"char *pszPrefix = NULL;\r\n\r\n"
+
+		"GetServerTagPrefix(&pszPrefix,NULL,NULL);\r\n"	 
+		"if (0 == _mbsstr((unsigned char *)TAG_0,(unsigned char *)\"::\"))\r\n"
+		"{\r\n"
+
+		"   GetServerTagPrefix(&pszPrefix,NULL,NULL);\r\n"	 
+		"   if (pszPrefix )\r\n"
+		"   {\r\n"
+		"     _mbsncpy((unsigned char *)szTagName, (unsigned char *)pszPrefix,sizeof (szTagName));\r\n"
+		"     _mbsncat((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n"
+		"   }\r\n"
+		"   else\r\n"
+		"      _mbsncpy((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n\r\n"
+		"}\r\n"
+		"else\r\n"
+		"{\r\n"
+		"   _mbsncpy((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n\r\n"
+		"}\r\n"
+
+	    "#ifndef RUN_ON_WEBNAVIGATOR\r\n"
+		"SSMRTOpenFaceplate(\r\n"
+		"  '?', PIC_0,\r\n"
+		"  NULL, 0,\r\n"
+		"  TOP_ADAPT_FIELDTOPICTURE, 0, 0, TRUE,\r\n"
+		"  szTagName, \"\",\r\n"
+		"  &Err);\r\n"		
+		"#else\r\n"
+		"_OpenFaceplate_Int(\r\n"
+		"1, PIC_0,\r\n"
+		"TOP_ADAPT_FIELDTOPICTURE, NULL, 0, 0, TRUE,\r\n"
+		"szTagName, \"\",\r\n"
+		"NULL, 0);\r\n"
+		"#endif\r\n"
+		);
+
+	}
+	if ( bLoopWorkField != FALSE )
+	{
+	_mbscpy((unsigned char *)code,(unsigned char *)	
+		"\r\n#pragma code(\"ssmrt.dll\")\r\n"
+		"#include \"ssmrt.h\"\r\n"
+		"#pragma code()\r\n"
+
+		"CMN_ERROR Err;\r\n"
+		"char szReturnPath[_MAX_PATH] = \"\";\r\n"
+		"char szTagName[MAX_DM_TYPE_NAME] = \"\";\r\n"
+		"char *pszPrefix = NULL;\r\n\r\n"
+
+		"GetServerTagPrefix(&pszPrefix,NULL,NULL);\r\n"	 
+			"if (0 == _mbsstr((unsigned char *)TAG_0,(unsigned char *)\"::\"))\r\n"
+		"{\r\n"
+
+		"   GetServerTagPrefix(&pszPrefix,NULL,NULL);\r\n"	 
+		"   if (pszPrefix )\r\n"
+		"   {\r\n"
+		"     _mbsncpy((unsigned char *)szTagName, (unsigned char *)pszPrefix,sizeof (szTagName));\r\n"
+		"     _mbsncat((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n"
+		"   }\r\n"
+		"   else\r\n"
+		"      _mbsncpy((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n\r\n"
+		"}\r\n"
+		"else\r\n"
+		"{\r\n"
+		"   _mbsncpy((unsigned char *)szTagName, (unsigned char *)TAG_0,sizeof (szTagName));\r\n\r\n"
+		"}\r\n"
+		
+		"#ifndef RUN_ON_WEBNAVIGATOR\r\n"
+		"if (SSMRTChangeWorkField (\r\n"
+		"  SSMGetScreen(lpszPictureName),PIC_0,\r\n"
+		"  szReturnPath, sizeof(szReturnPath), \r\n"
+		"  FALSE,\r\n"
+		"  &Err))\r\n"
+		"  {\r\n"
+		"     SetPropChar(szReturnPath,\"@Faceplate\",\"tagname\",szTagName);\r\n "
+		"  }\r\n"
+		"#else\r\n"
+		"if (SSMChangeWorkField (\r\n"
+		"  SSMGetScreen(lpszPictureName),PIC_0,TRUE));\r\n"
+		"  {\r\n"
+		"     SSMGetWorkFieldPath(SSMGetScreen(lpszPictureName) ,szReturnPath,_MAX_PATH);\r\n"
+     	"     SetPropChar(szReturnPath,\"@Faceplate\",\"tagname\",szTagName);\r\n "
+		"  }\r\n"
+		"#endif\r\n"
+		);
+	}
+	
+	_mbscat((unsigned char *)szSourceCode,(unsigned char *)code);
+
+	switch( g_Trigger )
+	{
+		case MOUSECLICK:
+			blob = GenerateBLOB("#include \"apdefap.h\"\r\n"
+                        		"void OnClick(char* lpszPictureName, char* lpszObjectName,"
+		        	        	"char* lpszPropertyName) {","}", szSourceCode);
+			break;
+
+		case MOUSELBUTTONDOWN:
+			blob = GenerateBLOB("#include \"apdefap.h\"\r\n"
+						"void OnLButtonDown(char* lpszPictureName, char* lpszObjectName,"
+						"char* lpszPropertyName, UINT nFlags, int x, int y) {","}", szSourceCode);
+			break;
+
+
+		case MOUSERBUTTONDOWN:
+			blob = GenerateBLOB("#include \"apdefap.h\"\r\n"
+						"void OnRButtonDown(char* lpszPictureName, char* lpszObjectName,"
+						"char* lpszPropertyName, UINT nFlags, int x, int y) {","}", szSourceCode);
+			break;
+		default:
+			break;
+	}
+
+	BEGIN_JCR_BLOBERRORS
+		SetAction(NULL, blob, g_Trigger);
+	END_JCR_BLOBERRORS
+	DeleteBLOB(blob);
+	  
+}
